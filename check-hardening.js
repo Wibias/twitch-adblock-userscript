@@ -84,10 +84,54 @@ function runBehaviorChecks(src) {
     }));
 }
 
+function runRuntimeStatusChecks(src) {
+    const factory = new Function(`
+        const vaftRuntimeStatus = {
+            channel: null,
+            showingAd: false,
+            strippingSegments: false,
+            backupPlayerType: null,
+            lastPlayerReload: null,
+            numStrippedAdSegments: 0,
+            isMidroll: false,
+            lastUpdate: null
+        };
+        ${extractFunction(src, 'updateVaftRuntimeStatus')}
+        return { vaftRuntimeStatus, updateVaftRuntimeStatus };
+    `);
+    const scope = factory();
+    const before = Date.now();
+    scope.updateVaftRuntimeStatus({
+        channel: 'example_channel',
+        showingAd: true,
+        strippingSegments: true,
+        backupPlayerType: 'autoplay',
+        lastPlayerReload: 123,
+        numStrippedAdSegments: 4,
+        isMidroll: true
+    });
+    assert.strictEqual(scope.vaftRuntimeStatus.channel, 'example_channel');
+    assert.strictEqual(scope.vaftRuntimeStatus.showingAd, true);
+    assert.strictEqual(scope.vaftRuntimeStatus.strippingSegments, true);
+    assert.strictEqual(scope.vaftRuntimeStatus.backupPlayerType, 'autoplay');
+    assert.strictEqual(scope.vaftRuntimeStatus.lastPlayerReload, 123);
+    assert.strictEqual(scope.vaftRuntimeStatus.numStrippedAdSegments, 4);
+    assert.strictEqual(scope.vaftRuntimeStatus.isMidroll, true);
+    assert(scope.vaftRuntimeStatus.lastUpdate >= before, 'runtime status timestamp not refreshed');
+
+    const snapshot = { ...scope.vaftRuntimeStatus };
+    scope.updateVaftRuntimeStatus(null);
+    assert.deepStrictEqual(scope.vaftRuntimeStatus, snapshot, 'invalid runtime status should be ignored');
+
+    assert(src.includes('runtimeStatus: {'), 'worker runtime status payload missing');
+    assert(src.includes('updateVaftRuntimeStatus(e.data.runtimeStatus);'), 'worker runtime status is not applied on page');
+    assert(src.includes('...vaftRuntimeStatus'), 'vaftStatus does not expose bridged worker state');
+}
+
 function runHardeningChecks(src, options = {}) {
     const behavior = options.behavior !== false;
     const strictRepo = options.strictRepo !== false;
-    assert(/\/\/ @version\s+37\.4\.0/.test(src), '37.4.0 version missing');
+    assert(/\/\/ @version\s+37\.4\.1/.test(src), '37.4.1 version missing');
     assert(src.includes('scope.WorkerFetchTimeoutMs = 15000;'), 'worker fetch timeout missing');
     assert(src.includes('const twitchWorkers = new Set();'), 'worker Set missing');
     assert(src.includes('URL.revokeObjectURL(workerBlobUrl);'), 'worker blob URL cleanup missing');
@@ -110,9 +154,10 @@ function runHardeningChecks(src, options = {}) {
         assert(src.includes("element.Codecs?.startsWith('avc')"), 'missing-codec protection missing');
         assert(src.includes("streamInfo.ResolutionList.some((element) => element.Codecs?.startsWith('hev') || element.Codecs?.startsWith('hvc'))"), 'HEVC missing-codec protection missing');
         assert(src.includes('streamInfo.RequestedAds.size > 100'), 'RequestedAds bound missing');
+        runRuntimeStatusChecks(src);
     }
     if (behavior) runBehaviorChecks(src);
     return true;
 }
 
-module.exports = { runHardeningChecks, extractFunction };
+module.exports = { runHardeningChecks, extractFunction, runRuntimeStatusChecks };
