@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Adblock Userscript
 // @namespace    https://github.com/0rpi/twitch-adblock-userscript
-// @version      37.4.1
+// @version      37.5.0
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
@@ -171,6 +171,7 @@
                 const newBlobStr = `
                     const pendingFetchRequests = new Map();
                     ${stripAdSegments.toString()}
+                    ${videoCodecFamily.toString()}
                     ${getStreamUrlForResolution.toString()}
                     ${processM3U8.toString()}
                     ${hookWorkerFetch.toString()}
@@ -295,7 +296,11 @@
         const realFetch = fetch;
         fetch = async function(url, options) {
             if (typeof url === 'string') {
-                if (AdSegmentCache.has(url)) {
+                const adCacheEntry = AdSegmentCache.get(url);
+                if (adCacheEntry !== undefined) {
+                    if (adCacheEntry.enhanced) {
+                        return new Response('', { status: 403, statusText: 'ad segment blocked' });
+                    }
                     return new Promise(function(resolve, reject) {
                         const send = function() {
                             return realFetch('data:video/mp4;base64,AAAAKGZ0eXBtcDQyAAAAAWlzb21tcDQyZGFzaGF2YzFpc282aGxzZgAABEltb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAYagAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAAABqHRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAURtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAALuAAAAAAFXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAADvbWluZgAAABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAACzc3RibAAAAGdzdHNkAAAAAAAAAAEAAABXbXA0YQAAAAAAAAABAAAAAAAAAAAAAgAQAAAAALuAAAAAAAAzZXNkcwAAAAADgICAIgABAASAgIAUQBUAAAAAAAAAAAAAAAWAgIACEZAGgICAAQIAAAAQc3R0cwAAAAAAAAAAAAAAEHN0c2MAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAAAAAeV0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAoAAAAFoAAAAAAGBbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAA9CQAAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABLG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAOxzdGJsAAAAoHN0c2QAAAAAAAAAAQAAAJBhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAoABaABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAOmF2Y0MBTUAe/+EAI2dNQB6WUoFAX/LgLUBAQFAAAD6AAA6mDgAAHoQAA9CW7y4KAQAEaOuPIAAAABBzdHRzAAAAAAAAAAAAAAAQc3RzYwAAAAAAAAAAAAAAFHN0c3oAAAAAAAAAAAAAAAAAAAAQc3RjbwAAAAAAAAAAAAAASG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAC4AAAAAAoAAAAAAACB0cmV4AAAAAAAAAAIAAAABAACCNQAAAAACQAAA', options).then(function(response) {
@@ -371,7 +376,7 @@
                                                 const resolutionInfo = {
                                                     Resolution: resolution,
                                                     FrameRate: attributes['FRAME-RATE'],
-                                                    Codecs: attributes['CODECS'],
+                                                    Codecs: attributes['CODECS'] || '',
                                                     Url: lines[i + 1]
                                                 };
                                                 streamInfo.Urls[lines[i + 1]] = resolutionInfo;
@@ -380,18 +385,20 @@
                                             StreamInfosByUrl[lines[i + 1]] = streamInfo;
                                         }
                                     }
-                                    const nonHevcResolutionList = streamInfo.ResolutionList.filter((element) => element.Codecs?.startsWith('avc') || element.Codecs?.startsWith('av0'));
-                                    if (AlwaysReloadPlayerOnAd || (nonHevcResolutionList.length > 0 && streamInfo.ResolutionList.some((element) => element.Codecs?.startsWith('hev') || element.Codecs?.startsWith('hvc')) && !SkipPlayerReloadOnHevc)) {
-                                        if (nonHevcResolutionList.length > 0) {
+                                    const decodableResolutionList = streamInfo.ResolutionList.filter((element) => videoCodecFamily(element.Codecs) === 'avc');
+                                    const hasEnhancedVariant = streamInfo.ResolutionList.some((element) => { const family = videoCodecFamily(element.Codecs); return family === 'hevc' || family === 'av1'; });
+                                    if (AlwaysReloadPlayerOnAd || (decodableResolutionList.length > 0 && hasEnhancedVariant && !SkipPlayerReloadOnHevc)) {
+                                        if (decodableResolutionList.length > 0) {
                                             for (let i = 0; i < lines.length - 1; i++) {
                                                 if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
                                                     const resSettings = parseAttributes(lines[i].substring(lines[i].indexOf(':') + 1));
                                                     const codecsKey = 'CODECS';
                                                     const codecs = resSettings[codecsKey] || '';
-                                                    if (codecs.startsWith('hev') || codecs.startsWith('hvc')) {
+                                                    const codecFamily = videoCodecFamily(codecs);
+                                                    if (codecFamily === 'hevc' || codecFamily === 'av1') {
                                                         const oldResolution = resSettings['RESOLUTION'];
                                                         const [targetWidth, targetHeight] = oldResolution.split('x').map(Number);
-                                                        const newResolutionInfo = nonHevcResolutionList.sort((a, b) => {
+                                                        const newResolutionInfo = decodableResolutionList.slice().sort((a, b) => {
                                                             const [streamWidthA, streamHeightA] = a.Resolution.split('x').map(Number);
                                                             const [streamWidthB, streamHeightB] = b.Resolution.split('x').map(Number);
                                                             return Math.abs((streamWidthA * streamHeightA) - (targetWidth * targetHeight)) - Math.abs((streamWidthB * streamHeightB) - (targetWidth * targetHeight));
@@ -403,7 +410,7 @@
                                                 }
                                             }
                                         }
-                                        if (nonHevcResolutionList.length > 0 || AlwaysReloadPlayerOnAd) {
+                                        if (decodableResolutionList.length > 0 || AlwaysReloadPlayerOnAd) {
                                             streamInfo.ModifiedM3U8 = lines.join('\n');
                                         }
                                     }
@@ -457,7 +464,19 @@
         }
         return null;
     }
-    function stripAdSegments(textStr, stripAllSegments, streamInfo) {
+    function videoCodecFamily(codecs) {
+        if (typeof codecs !== 'string' || !codecs.trim()) {
+            return 'unknown';
+        }
+        const entries = codecs.toLowerCase().split(',').map((entry) => entry.trim());
+        for (const codec of entries) {
+            if (codec.startsWith('avc1') || codec.startsWith('avc3')) return 'avc';
+            if (codec.startsWith('hev1') || codec.startsWith('hvc1')) return 'hevc';
+            if (codec.startsWith('av01') || codec.startsWith('av0')) return 'av1';
+        }
+        return 'unknown';
+    }
+    function stripAdSegments(textStr, stripAllSegments, streamInfo, isEnhancedPlaylist = false) {
         let hasStrippedAdSegments = false;
         const lines = textStr.replaceAll('\r', '').split('\n');
         const newAdUrl = 'https://twitch.tv';
@@ -472,7 +491,7 @@
                 if (!AdSegmentCache.has(segmentUrl)) {
                     streamInfo.NumStrippedAdSegments++;
                 }
-                AdSegmentCache.set(segmentUrl, Date.now());
+                AdSegmentCache.set(segmentUrl, { timestamp: Date.now(), enhanced: Boolean(isEnhancedPlaylist) });
                 hasStrippedAdSegments = true;
             }
             if (line.includes(AdSignifier)) {
@@ -490,42 +509,52 @@
         }
         streamInfo.IsStrippingAdSegments = hasStrippedAdSegments;
         AdSegmentCache.forEach((value, key, map) => {
-            if (value < Date.now() - 120000) {
+            if ((value?.timestamp ?? value) < Date.now() - 120000) {
                 map.delete(key);
             }
         });
         return lines.join('\n');
     }
-    function getStreamUrlForResolution(encodingsM3u8, resolutionInfo) {
+    function getStreamUrlForResolution(encodingsM3u8, resolutionInfo, selectionOut = null) {
         const encodingsLines = encodingsM3u8.replaceAll('\r', '').split('\n');
         const [targetWidth, targetHeight] = resolutionInfo.Resolution.split('x').map(Number);
-        let matchedResolutionUrl = null;
-        let matchedFrameRate = false;
-        let closestResolutionUrl = null;
-        let closestResolutionDifference = Infinity;
+        const targetFamily = videoCodecFamily(resolutionInfo.Codecs);
+        let bestSameFamily = null;
+        let bestSameFamilyScore = Infinity;
+        let bestAny = null;
+        let bestAnyScore = Infinity;
         for (let i = 0; i < encodingsLines.length - 1; i++) {
-            if (encodingsLines[i].startsWith('#EXT-X-STREAM-INF') && encodingsLines[i + 1].includes('.m3u8')) {
-                const attributes = parseAttributes(encodingsLines[i]);
-                const resolution = attributes['RESOLUTION'];
-                const frameRate = attributes['FRAME-RATE'];
-                if (resolution) {
-                    if (resolution == resolutionInfo.Resolution && (!matchedResolutionUrl || (!matchedFrameRate && frameRate == resolutionInfo.FrameRate))) {
-                        matchedResolutionUrl = encodingsLines[i + 1];
-                        matchedFrameRate = frameRate == resolutionInfo.FrameRate;
-                        if (matchedFrameRate) {
-                            return matchedResolutionUrl;
-                        }
-                    }
-                    const [width, height] = resolution.split('x').map(Number);
-                    const difference = Math.abs((width * height) - (targetWidth * targetHeight));
-                    if (difference < closestResolutionDifference) {
-                        closestResolutionUrl = encodingsLines[i + 1];
-                        closestResolutionDifference = difference;
-                    }
-                }
+            if (!encodingsLines[i].startsWith('#EXT-X-STREAM-INF') || !encodingsLines[i + 1].includes('.m3u8')) continue;
+            const attributes = parseAttributes(encodingsLines[i]);
+            const resolution = attributes['RESOLUTION'];
+            if (!resolution) continue;
+            const frameRate = attributes['FRAME-RATE'];
+            const codecs = attributes['CODECS'] || '';
+            const family = videoCodecFamily(codecs);
+            const [width, height] = resolution.split('x').map(Number);
+            const difference = Math.abs((width * height) - (targetWidth * targetHeight));
+            const exactResolutionPenalty = resolution === resolutionInfo.Resolution ? 0 : 1e12;
+            const frameRatePenalty = frameRate == resolutionInfo.FrameRate ? 0 : 1;
+            const score = exactResolutionPenalty + difference + frameRatePenalty;
+            const candidate = { url: encodingsLines[i + 1], codecs, resolution, frameRate, family };
+            if (score < bestAnyScore) {
+                bestAny = candidate;
+                bestAnyScore = score;
+            }
+            if (targetFamily !== 'unknown' && family === targetFamily && score < bestSameFamilyScore) {
+                bestSameFamily = candidate;
+                bestSameFamilyScore = score;
             }
         }
-        return closestResolutionUrl;
+        const selected = bestSameFamily || bestAny;
+        if (selectionOut && selected) {
+            selectionOut.url = selected.url;
+            selectionOut.codecs = selected.codecs;
+            selectionOut.resolution = selected.resolution;
+            selectionOut.frameRate = selected.frameRate;
+            selectionOut.family = selected.family;
+        }
+        return selected?.url ?? null;
     }
     async function processM3U8(url, textStr, realFetch) {
         const streamInfo = StreamInfosByUrl[url];
@@ -579,8 +608,9 @@
                 return textStr;
             }
             const currentCodecs = currentResolution.Codecs || '';
-            const isHevc = currentCodecs.startsWith('hev') || currentCodecs.startsWith('hvc');
-            if (((isHevc && !SkipPlayerReloadOnHevc) || AlwaysReloadPlayerOnAd) && streamInfo.ModifiedM3U8 && !streamInfo.IsUsingModifiedM3U8) {
+            const currentCodecFamily = videoCodecFamily(currentCodecs);
+            const isEnhanced = currentCodecFamily === 'hevc' || currentCodecFamily === 'av1';
+            if (((isEnhanced && !SkipPlayerReloadOnHevc) || AlwaysReloadPlayerOnAd) && streamInfo.ModifiedM3U8 && !streamInfo.IsUsingModifiedM3U8) {
                 streamInfo.IsUsingModifiedM3U8 = true;
                 streamInfo.LastPlayerReload = Date.now();
                 postMessage({
@@ -590,6 +620,8 @@
             let backupPlayerType = null;
             let backupM3u8 = null;
             let fallbackM3u8 = null;
+            let backupCodecFamily = 'unknown';
+            let fallbackCodecFamily = 'unknown';
             let startIndex = 0;
             let isDoingMinimalRequests = false;
             if (streamInfo.LastPlayerReload > Date.now() - PlayerReloadMinimalRequestsTime) {
@@ -621,17 +653,20 @@
                     }
                     if (encodingsM3u8) {
                         try {
-                            const streamM3u8Url = getStreamUrlForResolution(encodingsM3u8, currentResolution);
+                            const selectedBackup = {};
+                            const streamM3u8Url = getStreamUrlForResolution(encodingsM3u8, currentResolution, selectedBackup);
                             const streamM3u8Response = await realFetch(streamM3u8Url);
                             if (streamM3u8Response.status == 200) {
                                 const m3u8Text = await streamM3u8Response.text();
                                 if (m3u8Text) {
                                     if (playerType == FallbackPlayerType) {
                                         fallbackM3u8 = m3u8Text;
+                                        fallbackCodecFamily = videoCodecFamily(selectedBackup.codecs);
                                     }
                                     if ((!m3u8Text.includes(AdSignifier) && (SimulatedAdsDepth == 0 || playerTypeIndex >= SimulatedAdsDepth - 1)) || (!fallbackM3u8 && playerTypeIndex >= BackupPlayerTypes.length - 1)) {
                                         backupPlayerType = playerType;
                                         backupM3u8 = m3u8Text;
+                                        backupCodecFamily = videoCodecFamily(selectedBackup.codecs);
                                         break;
                                     }
                                     if (isFullyCachedPlayerType) {
@@ -640,6 +675,7 @@
                                     if (isDoingMinimalRequests) {
                                         backupPlayerType = playerType;
                                         backupM3u8 = m3u8Text;
+                                        backupCodecFamily = videoCodecFamily(selectedBackup.codecs);
                                         break;
                                     }
                                 }
@@ -655,6 +691,7 @@
             if (!backupM3u8 && fallbackM3u8) {
                 backupPlayerType = FallbackPlayerType;
                 backupM3u8 = fallbackM3u8;
+                backupCodecFamily = fallbackCodecFamily;
             }
             if (backupM3u8) {
                 textStr = backupM3u8;
@@ -663,9 +700,11 @@
                     console.log(`Blocking${(streamInfo.IsMidroll ? ' midroll ' : ' ')}ads (${backupPlayerType})`);
                 }
             }
-            const stripHevc = isHevc && streamInfo.ModifiedM3U8;
-            if (IsAdStrippingEnabled || stripHevc) {
-                textStr = stripAdSegments(textStr, stripHevc, streamInfo);
+            const effectiveCodecFamily = backupM3u8 ? backupCodecFamily : currentCodecFamily;
+            const effectiveIsEnhanced = effectiveCodecFamily === 'hevc' || effectiveCodecFamily === 'av1';
+            const stripEnhanced = isEnhanced && streamInfo.ModifiedM3U8;
+            if (IsAdStrippingEnabled || stripEnhanced) {
+                textStr = stripAdSegments(textStr, stripEnhanced, streamInfo, effectiveIsEnhanced);
             }
         } else if (streamInfo.IsShowingAd) {
             console.log('Finished blocking ads');
@@ -1255,7 +1294,7 @@
     };
     window.vaftStatus = () => {
         return {
-            version: '37.4.1',
+            version: '37.5.0',
             workerCount: twitchWorkers.size,
             backupMode: BackupPlayerTypes.includes('autoplay') ? '360p' : 'source',
             autoQuality: getAutoQualityMode(),

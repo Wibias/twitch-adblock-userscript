@@ -138,18 +138,24 @@ function runCodecSafetyChecks(src) {
     assert.strictEqual(codecFamily('vp09.00.10.08'), 'unknown');
 
     const selectStream = new Function(`
-        ${extractFunction(src, 'parseAttributes')}
+        function parseAttributes(line) {
+            const body = line.substring(line.indexOf(':') + 1);
+            return Object.fromEntries(body.split(',').map((part) => {
+                const [key, ...rest] = part.split('=');
+                return [key, rest.join('=').replace(/^"|"$/g, '')];
+            }));
+        }
         ${extractFunction(src, 'videoCodecFamily')}
         ${extractFunction(src, 'getStreamUrlForResolution')}
         return getStreamUrlForResolution;
     `)();
     const master = [
         '#EXTM3U',
-        '#EXT-X-STREAM-INF:RESOLUTION=1920x1080,FRAME-RATE=60,CODECS="avc1.64002A,mp4a.40.2"',
+        '#EXT-X-STREAM-INF:RESOLUTION=1920x1080,FRAME-RATE=60,CODECS="avc1.64002A"',
         'https://example.com/avc-1080.m3u8',
-        '#EXT-X-STREAM-INF:RESOLUTION=1280x720,FRAME-RATE=60,CODECS="mp4a.40.2,hvc1.2.4.L150.B0"',
+        '#EXT-X-STREAM-INF:RESOLUTION=1280x720,FRAME-RATE=60,CODECS="hvc1.2.4.L150.B0"',
         'https://example.com/hevc-720.m3u8',
-        '#EXT-X-STREAM-INF:RESOLUTION=854x480,FRAME-RATE=30,CODECS="av01.0.08M.08,mp4a.40.2"',
+        '#EXT-X-STREAM-INF:RESOLUTION=854x480,FRAME-RATE=30,CODECS="av01.0.08M.08"',
         'https://example.com/av1-480.m3u8'
     ].join('\n');
     const hevcSelection = {};
@@ -186,7 +192,7 @@ function runCodecSafetyChecks(src) {
 function runHardeningChecks(src, options = {}) {
     const behavior = options.behavior !== false;
     const strictRepo = options.strictRepo !== false;
-    assert(/\/\/ @version\s+37\.4\.1/.test(src), '37.4.1 version missing');
+    assert(/\/\/ @version\s+37\.5\.0/.test(src), '37.5.0 version missing');
     assert(src.includes('scope.WorkerFetchTimeoutMs = 15000;'), 'worker fetch timeout missing');
     assert(src.includes('const twitchWorkers = new Set();'), 'worker Set missing');
     assert(src.includes('URL.revokeObjectURL(workerBlobUrl);'), 'worker blob URL cleanup missing');
