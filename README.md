@@ -35,6 +35,16 @@ node check.js
 
 `@version` = public (auto-update, bump every visible change). `ourTwitchAdSolutionsVersion=24` = internal mutex, don't touch. Release: bump → `node check.js` → commit → `git tag vX.Y.Z`.
 
+## 37.4 reliability hardening
+
+- Preserves native hidden-tab state for VAFT's own background guards.
+- Normalizes Fetch API inputs and Headers safely.
+- Cleans up Worker blob URLs and terminated workers.
+- Times out orphaned Worker-to-page fetch bridges after 15 seconds.
+- Retries auto-quality after transient failures instead of marking the attempt complete.
+- Accepts signed/query-string HLS playlist URLs and tolerates missing codec metadata.
+- Adds local diagnostics via `window.vaftStatus()`.
+
 ## Limits
 
 `*.twitch.tv` matched, desktop `www.twitch.tv` only. Twitch mutates player often + upstream dead → can break anytime. Not affiliated.

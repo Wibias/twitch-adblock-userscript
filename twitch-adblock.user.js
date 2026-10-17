@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Adblock Userscript
 // @namespace    https://github.com/0rpi/twitch-adblock-userscript
-// @version      37.3.0
+// @version      37.4.0
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
@@ -64,10 +64,25 @@
         scope.IsAdStrippingEnabled = true;
         scope.AdSegmentCache = new Map();
         scope.AllSegmentsAreAdSegments = false;
+        scope.WorkerFetchTimeoutMs = 15000;
     }
     let isActivelyStrippingAds = false;
     let localStorageHookFailed = false;
-    const twitchWorkers = [];
+    const nativeHiddenGetter = document.__lookupGetter__('hidden');
+    const nativeWebkitHiddenGetter = document.__lookupGetter__('webkitHidden');
+    function isDocumentActuallyHidden() {
+        try {
+            if (nativeHiddenGetter) {
+                return nativeHiddenGetter.call(document) === true;
+            }
+            if (nativeWebkitHiddenGetter) {
+                return nativeWebkitHiddenGetter.call(document) === true;
+            }
+        } catch {}
+        return false;
+    }
+    window.vaftIsDocumentHidden = isDocumentActuallyHidden;
+    const twitchWorkers = new Set();
     const workerStringConflicts = [
         'twitch',
         'isVariantA'// TwitchNoSub
@@ -174,8 +189,9 @@
                         } else if (e.data.key == 'FetchResponse') {
                             const responseData = e.data.value;
                             if (pendingFetchRequests.has(responseData.id)) {
-                                const { resolve, reject } = pendingFetchRequests.get(responseData.id);
+                                const { resolve, reject, timeoutId } = pendingFetchRequests.get(responseData.id);
                                 pendingFetchRequests.delete(responseData.id);
+                                clearTimeout(timeoutId);
                                 if (responseData.error) {
                                     reject(new Error(responseData.error));
                                 } else {
@@ -202,8 +218,18 @@
                     hookWorkerFetch();
                     eval(workerString);
                 `;
-                super(URL.createObjectURL(new Blob([newBlobStr])), options);
-                twitchWorkers.push(this);
+                const workerBlobUrl = URL.createObjectURL(new Blob([newBlobStr]));
+                try {
+                    super(workerBlobUrl, options);
+                } finally {
+                    URL.revokeObjectURL(workerBlobUrl);
+                }
+                twitchWorkers.add(this);
+                const realTerminate = this.terminate.bind(this);
+                this.terminate = () => {
+                    twitchWorkers.delete(this);
+                    realTerminate();
+                };
                 this.addEventListener('message', (e) => {
                     if (e.data.key == 'UpdateAdBlockBanner') {
                         updateAdblockBanner(e.data);
@@ -336,14 +362,15 @@
                                             StreamInfosByUrl[lines[i + 1]] = streamInfo;
                                         }
                                     }
-                                    const nonHevcResolutionList = streamInfo.ResolutionList.filter((element) => element.Codecs.startsWith('avc') || element.Codecs.startsWith('av0'));
+                                    const nonHevcResolutionList = streamInfo.ResolutionList.filter((element) => element.Codecs?.startsWith('avc') || element.Codecs?.startsWith('av0'));
                                     if (AlwaysReloadPlayerOnAd || (nonHevcResolutionList.length > 0 && streamInfo.ResolutionList.some((element) => element.Codecs.startsWith('hev') || element.Codecs.startsWith('hvc')) && !SkipPlayerReloadOnHevc)) {
                                         if (nonHevcResolutionList.length > 0) {
                                             for (let i = 0; i < lines.length - 1; i++) {
                                                 if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
                                                     const resSettings = parseAttributes(lines[i].substring(lines[i].indexOf(':') + 1));
                                                     const codecsKey = 'CODECS';
-                                                    if (resSettings[codecsKey].startsWith('hev') || resSettings[codecsKey].startsWith('hvc')) {
+                                                    const codecs = resSettings[codecsKey] || '';
+                                                    if (codecs.startsWith('hev') || codecs.startsWith('hvc')) {
                                                         const oldResolution = resSettings['RESOLUTION'];
                                                         const [targetWidth, targetHeight] = oldResolution.split('x').map(Number);
                                                         const newResolutionInfo = nonHevcResolutionList.sort((a, b) => {
@@ -399,8 +426,18 @@
         if (typeof encodingsM3u8 !== 'string') {
             return null;
         }
-        const m = encodingsM3u8.match(/^https:.*\.m3u8$/m);
-        return m ? m[0] : null;
+        const lines = encodingsM3u8.replaceAll('\r', '').split('\n');
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#')) continue;
+            try {
+                const parsed = new URL(line);
+                if (parsed.protocol === 'https:' && parsed.pathname.endsWith('.m3u8')) {
+                    return line;
+                }
+            } catch {}
+        }
+        return null;
     }
     function stripAdSegments(textStr, stripAllSegments, streamInfo) {
         let hasStrippedAdSegments = false;
@@ -500,6 +537,9 @@
                     if (line.startsWith('#EXTINF') && lines.length > i + 1) {
                         if (!line.includes(',live') && !streamInfo.RequestedAds.has(lines[i + 1])) {
                             streamInfo.RequestedAds.add(lines[i + 1]);
+                            if (streamInfo.RequestedAds.size > 100) {
+                                streamInfo.RequestedAds.delete(streamInfo.RequestedAds.values().next().value);
+                            }
                             fetch(lines[i + 1]).then((response)=>{response.blob()});
                             break;
                         }
@@ -511,7 +551,8 @@
                 console.log('Ads will leak due to missing resolution info for ' + url);
                 return textStr;
             }
-            const isHevc = currentResolution.Codecs.startsWith('hev') || currentResolution.Codecs.startsWith('hvc');
+            const currentCodecs = currentResolution.Codecs || '';
+            const isHevc = currentCodecs.startsWith('hev') || currentCodecs.startsWith('hvc');
             if (((isHevc && !SkipPlayerReloadOnHevc) || AlwaysReloadPlayerOnAd) && streamInfo.ModifiedM3U8 && !streamInfo.IsUsingModifiedM3U8) {
                 streamInfo.IsUsingModifiedM3U8 = true;
                 streamInfo.LastPlayerReload = Date.now();
@@ -687,9 +728,16 @@
                     headers
                 }
             };
+            const timeoutId = setTimeout(() => {
+                const pending = pendingFetchRequests.get(requestId);
+                if (!pending) return;
+                pendingFetchRequests.delete(requestId);
+                pending.reject(new Error('VAFT worker fetch request timed out'));
+            }, WorkerFetchTimeoutMs);
             pendingFetchRequests.set(requestId, {
                 resolve,
-                reject
+                reject,
+                timeoutId
             });
             postMessage({
                 key: 'FetchRequest',
@@ -920,7 +968,12 @@
     };
     function postTwitchWorkerMessage(key, value) {
         twitchWorkers.forEach((worker) => {
-            worker.postMessage({key: key, value: value});
+            try {
+                worker.postMessage({key: key, value: value});
+            } catch (error) {
+                twitchWorkers.delete(worker);
+                console.debug('[vaft] removed inactive worker', error);
+            }
         });
     }
     async function handleWorkerFetchRequest(fetchRequest) {
@@ -944,56 +997,64 @@
     function hookFetch() {
         const realFetch = window.fetch;
         window.realFetch = realFetch;
-        window.fetch = function(url, init, ...args) {
-            if (typeof url === 'string') {
-                if (url.includes('gql')) {
-                    let deviceId = init.headers['X-Device-Id'];
-                    if (typeof deviceId !== 'string') {
-                        deviceId = init.headers['Device-ID'];
-                    }
-                    if (typeof deviceId === 'string' && GQLDeviceID != deviceId) {
-                        GQLDeviceID = deviceId;
-                        postTwitchWorkerMessage('UpdateDeviceId', GQLDeviceID);
-                    }
-                    if (typeof init.headers['Client-Version'] === 'string' && init.headers['Client-Version'] !== ClientVersion) {
-                        postTwitchWorkerMessage('UpdateClientVersion', ClientVersion = init.headers['Client-Version']);
-                    }
-                    if (typeof init.headers['Client-Session-Id'] === 'string' && init.headers['Client-Session-Id'] !== ClientSession) {
-                        postTwitchWorkerMessage('UpdateClientSession', ClientSession = init.headers['Client-Session-Id']);
-                    }
-                    if (typeof init.headers['Client-Integrity'] === 'string' && init.headers['Client-Integrity'] !== ClientIntegrityHeader) {
-                        postTwitchWorkerMessage('UpdateClientIntegrityHeader', ClientIntegrityHeader = init.headers['Client-Integrity']);
-                    }
-                    if (typeof init.headers['Authorization'] === 'string' && init.headers['Authorization'] !== AuthorizationHeader) {
-                        postTwitchWorkerMessage('UpdateAuthorizationHeader', AuthorizationHeader = init.headers['Authorization']);
-                    }
-                    if (init && typeof init.body === 'string' && init.body.includes('PlaybackAccessToken') && init.body.includes('picture-by-picture')) {
-                        init.body = '';
-                    }
-                    if (ForceAccessTokenPlayerType && typeof init.body === 'string' && init.body.includes('PlaybackAccessToken')) {
+        window.fetch = function(input, init, ...args) {
+            const isRequest = typeof Request !== 'undefined' && input instanceof Request;
+            const isUrlObject = typeof URL !== 'undefined' && input instanceof URL;
+            const requestUrl = typeof input === 'string' ? input : isRequest ? input.url : isUrlObject ? input.href : '';
+            let requestHeaders;
+            try {
+                requestHeaders = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
+            } catch {
+                requestHeaders = new Headers();
+            }
+            let nextInit = init;
+            if (requestUrl.includes('gql')) {
+                const deviceId = requestHeaders.get('X-Device-Id') ?? requestHeaders.get('Device-ID');
+                if (typeof deviceId === 'string' && GQLDeviceID != deviceId) {
+                    GQLDeviceID = deviceId;
+                    postTwitchWorkerMessage('UpdateDeviceId', GQLDeviceID);
+                }
+                const clientVersion = requestHeaders.get('Client-Version');
+                if (typeof clientVersion === 'string' && clientVersion !== ClientVersion) {
+                    postTwitchWorkerMessage('UpdateClientVersion', ClientVersion = clientVersion);
+                }
+                const clientSession = requestHeaders.get('Client-Session-Id');
+                if (typeof clientSession === 'string' && clientSession !== ClientSession) {
+                    postTwitchWorkerMessage('UpdateClientSession', ClientSession = clientSession);
+                }
+                const clientIntegrity = requestHeaders.get('Client-Integrity');
+                if (typeof clientIntegrity === 'string' && clientIntegrity !== ClientIntegrityHeader) {
+                    postTwitchWorkerMessage('UpdateClientIntegrityHeader', ClientIntegrityHeader = clientIntegrity);
+                }
+                const authorization = requestHeaders.get('Authorization');
+                if (typeof authorization === 'string' && authorization !== AuthorizationHeader) {
+                    postTwitchWorkerMessage('UpdateAuthorizationHeader', AuthorizationHeader = authorization);
+                }
+
+                const body = typeof nextInit?.body === 'string' ? nextInit.body : null;
+                if (body?.includes('PlaybackAccessToken') && body.includes('picture-by-picture')) {
+                    nextInit = {...(nextInit || {}), body: ''};
+                } else if (ForceAccessTokenPlayerType && body?.includes('PlaybackAccessToken')) {
+                    try {
                         let replacedPlayerType = '';
-                        const newBody = JSON.parse(init.body);
-                        if (Array.isArray(newBody)) {
-                            for (let i = 0; i < newBody.length; i++) {
-                                if (newBody[i]?.variables?.playerType && newBody[i]?.variables?.playerType !== ForceAccessTokenPlayerType) {
-                                    replacedPlayerType = newBody[i].variables.playerType;
-                                    newBody[i].variables.playerType = ForceAccessTokenPlayerType;
-                                }
-                            }
-                        } else {
-                            if (newBody?.variables?.playerType && newBody?.variables?.playerType !== ForceAccessTokenPlayerType) {
-                                replacedPlayerType = newBody.variables.playerType;
-                                newBody.variables.playerType = ForceAccessTokenPlayerType;
+                        const newBody = JSON.parse(body);
+                        const operations = Array.isArray(newBody) ? newBody : [newBody];
+                        for (const operation of operations) {
+                            if (operation?.variables?.playerType && operation.variables.playerType !== ForceAccessTokenPlayerType) {
+                                replacedPlayerType = operation.variables.playerType;
+                                operation.variables.playerType = ForceAccessTokenPlayerType;
                             }
                         }
                         if (replacedPlayerType) {
                             console.log(`Replaced '${replacedPlayerType}' player type with '${ForceAccessTokenPlayerType}' player type`);
-                            init.body = JSON.stringify(newBody);
+                            nextInit = {...(nextInit || {}), body: JSON.stringify(newBody)};
                         }
+                    } catch (error) {
+                        console.debug('[vaft] ignored malformed PlaybackAccessToken request body', error);
                     }
                 }
             }
-            return realFetch.apply(this, arguments);
+            return realFetch.call(this, input, nextInit, ...args);
         };
     }
     function onContentLoaded() {
@@ -1004,8 +1065,6 @@
                 }
             });
         } catch {}
-        let hidden = document.__lookupGetter__('hidden');
-        let webkitHidden = document.__lookupGetter__('webkitHidden');
         try {
             Object.defineProperty(document, 'hidden', {
                 get() {
@@ -1024,7 +1083,7 @@
             const isChrome = typeof chrome !== 'undefined';
             const videos = document.getElementsByTagName('video');
             if (videos.length > 0) {
-                if (hidden.apply(document) === true || (webkitHidden && webkitHidden.apply(document) === true)) {
+                if (isDocumentActuallyHidden()) {
                     wasVideoPlaying = !videos[0].paused && !videos[0].ended;
                 } else {
                     if (!playerBufferState.hasStreamStarted) {
@@ -1036,7 +1095,7 @@
                     clearTimeout(latencyTimer);
                     latencyTimer = setTimeout(() => {
                         try {
-                            if (hidden.apply(document) === true || isActivelyStrippingAds || playerBufferState.lastFixTime > Date.now() - PlayerBufferingMinRepeatDelay) {
+                            if (isDocumentActuallyHidden() || isActivelyStrippingAds || playerBufferState.lastFixTime > Date.now() - PlayerBufferingMinRepeatDelay) {
                                 return;
                             }
                             const playerAndState = playerForMonitoringBuffering || getPlayerAndState();
@@ -1158,6 +1217,21 @@
             localStorage.setItem('vaftAutoQuality', mode === 'off' ? 'off' : 'on');
         } catch {}
     };
+    window.vaftStatus = () => {
+        const streams = Object.values(StreamInfos).filter(Boolean);
+        const activeStream = streams.find((stream) => stream.IsShowingAd) || streams[0] || null;
+        return {
+            version: '37.4.0',
+            workerCount: twitchWorkers.size,
+            backupMode: BackupPlayerTypes.includes('autoplay') ? '360p' : 'source',
+            autoQuality: getAutoQualityMode(),
+            channel: activeStream?.ChannelName ?? null,
+            showingAd: activeStream?.IsShowingAd ?? false,
+            strippingSegments: activeStream?.IsStrippingAdSegments ?? false,
+            backupPlayerType: activeStream?.ActiveBackupPlayerType ?? null,
+            lastPlayerReload: activeStream?.LastPlayerReload ?? null
+        };
+    };
     window.addEventListener('storage', (e) => {
         if (e.key === 'adBackupMode') {
             applyAdBackupMode(e.newValue);
@@ -1210,7 +1284,7 @@
   }
 
   function ensureAdModeButtons() {
-    if (document.hidden) return;
+    if (typeof window.vaftIsDocumentHidden === 'function' && window.vaftIsDocumentHidden()) return;
     const share = q('[data-a-target="share-button"]');
     if (!share || typeof window.setAdBackupMode !== 'function') return;
     const existing = q('#vaft-ad-mode');
@@ -1256,7 +1330,7 @@
 
   let busy = false;
   setInterval(async () => {
-    if (document.hidden) return;
+    if (typeof window.vaftIsDocumentHidden === 'function' && window.vaftIsDocumentHidden()) return;
     if (!isAutoQualityOn()) return;
     const v = q('video');
     if (busy || !v) return;
@@ -1264,8 +1338,13 @@
     if (q('.adblock-overlay')?.style.display === 'block') { done = false; return; }
     if (done || v.readyState < 2 || v.videoHeight >= 1080) return;
     busy = true;
-    await setQuality();
-    done = true;
-    busy = false;
+    try {
+      done = await setQuality();
+    } catch (error) {
+      done = false;
+      console.debug('[vaft] auto-quality attempt failed', error);
+    } finally {
+      busy = false;
+    }
   }, 3000);
 })();

@@ -82,12 +82,15 @@ assert(src.includes('window.getAutoQuality'), 'getAutoQuality missing');
 assert(src.includes('data-kind="quality"'), 'quality toggle buttons missing');
 
 // Interval guards: no busy loop when tab hidden or auto-quality off.
-assert(src.includes('if (document.hidden) return;'), 'document.hidden guard missing');
+assert(src.includes('vaftIsDocumentHidden'), 'native hidden-state guard missing');
+assert(!src.includes('if (document.hidden) return;'), 'patched document.hidden guard still present');
 assert(src.includes("if (!isAutoQualityOn()) return;"), 'auto-quality guard missing in quality loop');
 
 // Version header present and bumped for this change set.
 const versionMatch = src.match(/\/\/ @version\s+(\d+\.\d+\.\d+)/);
 assert(versionMatch, '@version header missing');
-assert(versionMatch[1] === '37.3.0', `expected @version 37.3.0, got ${versionMatch[1]}`);
+assert(versionMatch[1] === '37.4.0', `expected @version 37.4.0, got ${versionMatch[1]}`);
+
+require('./check-hardening.js').runHardeningChecks(src);
 
 console.log('OK');
