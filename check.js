@@ -91,6 +91,7 @@ const versionMatch = src.match(/\/\/ @version\s+(\d+\.\d+\.\d+)/);
 assert(versionMatch, '@version header missing');
 assert(versionMatch[1] === '37.5.0', `expected @version 37.5.0, got ${versionMatch[1]}`);
 
+require('./check-video-resilience.js').runVideoResilienceChecks(src);
 require('./check-hardening.js').runHardeningChecks(src);
 
 console.log('OK');
