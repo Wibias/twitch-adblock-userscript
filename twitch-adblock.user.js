@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Adblock Userscript
 // @namespace    https://github.com/0rpi/twitch-adblock-userscript
-// @version      37.5.0
+// @version      37.5.1
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
@@ -156,6 +156,11 @@
             || workerStringAllow.some((x) => workerString.includes(x))
             || workerStringReinsert.some((x) => workerString.includes(x));
     }
+    function hasVaftWorkerHooks(workerSource) {
+        return typeof workerSource === 'string'
+            && workerSource.includes('hookWorkerFetch (vaft)')
+            && workerSource.includes('processM3U8');
+    }
     function hookWindowWorker() {
         const reinsert = getWorkersForReinsert(window.Worker);
         const newWorker = class Worker extends getCleanWorker(window.Worker) {
@@ -168,7 +173,21 @@
                     super(twitchBlobUrl, options);
                     return;
                 }
-                const newBlobStr = `
+                let prefetchedWorkerJs = null;
+                try {
+                    prefetchedWorkerJs = getWasmWorkerJs(twitchBlobUrl);
+                } catch (error) {
+                    console.debug('[vaft] could not inspect Twitch worker before injection', error);
+                }
+                const alreadyHooked = hasVaftWorkerHooks(prefetchedWorkerJs);
+                if (!prefetchedWorkerJs) {
+                    super(twitchBlobUrl, options);
+                } else if (alreadyHooked) {
+                    super(twitchBlobUrl, options);
+                    console.debug('[vaft] Twitch worker already carries VAFT hooks; skipping reinjection');
+                } else {
+                    const workerSourceLiteral = JSON.stringify(prefetchedWorkerJs);
+                    const newBlobStr = `
                     const pendingFetchRequests = new Map();
                     ${stripAdSegments.toString()}
                     ${videoCodecFamily.toString()}
@@ -179,11 +198,10 @@
                     ${getAccessToken.toString()}
                     ${gqlRequest.toString()}
                     ${parseAttributes.toString()}
-                    ${getWasmWorkerJs.toString()}
                     ${getServerTimeFromM3u8.toString()}
                     ${replaceServerTimeInM3u8.toString()}
                     ${getFirstM3u8Url.toString()}
-                    const workerString = getWasmWorkerJs('${twitchBlobUrl.replaceAll("'", "%27")}');
+                    const workerString = ${workerSourceLiteral};
                     declareOptions(self);
                     BackupPlayerTypes = ${JSON.stringify(BackupPlayerTypes)};
                     GQLDeviceID = ${GQLDeviceID ? "'" + GQLDeviceID + "'" : null};
@@ -235,12 +253,13 @@
                     });
                     hookWorkerFetch();
                     eval(workerString);
-                `;
-                const workerBlobUrl = URL.createObjectURL(new Blob([newBlobStr]));
-                try {
-                    super(workerBlobUrl, options);
-                } finally {
-                    URL.revokeObjectURL(workerBlobUrl);
+                    `;
+                    const workerBlobUrl = URL.createObjectURL(new Blob([newBlobStr]));
+                    try {
+                        super(workerBlobUrl, options);
+                    } finally {
+                        URL.revokeObjectURL(workerBlobUrl);
+                    }
                 }
                 twitchWorkers.add(this);
                 const realTerminate = this.terminate.bind(this);
@@ -831,7 +850,59 @@
         lastFixTime: 0,
         isLive: true
     };
+    function isStandaloneTwitchAdVideo(video) {
+        if (!video) return false;
+        const videoSrc = video.currentSrc || video.getAttribute?.('src') || '';
+        if (!videoSrc || videoSrc.startsWith('blob:')) return false;
+        try {
+            const host = new URL(videoSrc, document.location.href).hostname.toLowerCase();
+            return host === 'media-amazon.com' || host.endsWith('.media-amazon.com');
+        } catch {
+            return false;
+        }
+    }
+    function getPlayerVideoElement() {
+        const knownPlayerVideo = playerForMonitoringBuffering?.player?.getHTMLVideoElement?.();
+        if (knownPlayerVideo && !isStandaloneTwitchAdVideo(knownPlayerVideo)) {
+            return knownPlayerVideo;
+        }
+        const videos = document.getElementsByTagName('video');
+        for (let i = 0; i < videos.length; i++) {
+            const video = videos[i];
+            if (!video.dataset.vaftAdHidden && !isStandaloneTwitchAdVideo(video)) {
+                return video;
+            }
+        }
+        return null;
+    }
+    window.vaftGetPlayerVideoElement = getPlayerVideoElement;
+    function hideStandaloneTwitchVideoAds() {
+        const primaryVideo = playerForMonitoringBuffering?.player?.getHTMLVideoElement?.();
+        const videos = document.getElementsByTagName('video');
+        for (let i = 0; i < videos.length; i++) {
+            const video = videos[i];
+            const isAdVideo = isStandaloneTwitchAdVideo(video);
+            if (isAdVideo && video !== primaryVideo) {
+                if (!video.dataset.vaftAdHidden) {
+                    video.dataset.vaftAdHidden = '1';
+                    video.dataset.vaftAdWasMuted = video.muted ? '1' : '0';
+                }
+                video.style.setProperty('display', 'none', 'important');
+                try {
+                    video.muted = true;
+                    if (!video.paused) video.pause();
+                } catch {}
+            } else if (video.dataset.vaftAdHidden && !isAdVideo) {
+                const wasMuted = video.dataset.vaftAdWasMuted === '1';
+                delete video.dataset.vaftAdHidden;
+                delete video.dataset.vaftAdWasMuted;
+                video.style.removeProperty('display');
+                try { video.muted = wasMuted; } catch {}
+            }
+        }
+    }
     function monitorPlayerBuffering() {
+        hideStandaloneTwitchVideoAds();
         if (playerForMonitoringBuffering) {
             try {
                 const player = playerForMonitoringBuffering.player;
@@ -889,7 +960,7 @@
                 playerForMonitoringBuffering = null;
             }
         }
-        if (!playerForMonitoringBuffering && document.querySelector('video')) {
+        if (!playerForMonitoringBuffering && getPlayerVideoElement()) {
             const playerAndState = getPlayerAndState();
             if (playerAndState && playerAndState.player && playerAndState.state) {
                 playerForMonitoringBuffering = {
@@ -1156,16 +1227,16 @@
         let latencyTimer = null;
         const visibilityChange = e => {
             const isChrome = typeof chrome !== 'undefined';
-            const videos = document.getElementsByTagName('video');
-            if (videos.length > 0) {
+            const video = getPlayerVideoElement();
+            if (video) {
                 if (isDocumentActuallyHidden()) {
-                    wasVideoPlaying = !videos[0].paused && !videos[0].ended;
+                    wasVideoPlaying = !video.paused && !video.ended;
                 } else {
                     if (!playerBufferState.hasStreamStarted) {
                         playerBufferState.hasStreamStarted = true;
                     }
-                    if (isChrome && wasVideoPlaying && !videos[0].ended && videos[0].paused && videos[0].muted) {
-                        videos[0].play();
+                    if (isChrome && wasVideoPlaying && !video.ended && video.paused && video.muted) {
+                        video.play();
                     }
                     clearTimeout(latencyTimer);
                     latencyTimer = setTimeout(() => {
@@ -1294,7 +1365,7 @@
     };
     window.vaftStatus = () => {
         return {
-            version: '37.5.0',
+            version: '37.5.1',
             workerCount: twitchWorkers.size,
             backupMode: BackupPlayerTypes.includes('autoplay') ? '360p' : 'source',
             autoQuality: getAutoQualityMode(),
@@ -1401,7 +1472,7 @@
   setInterval(async () => {
     if (typeof window.vaftIsDocumentHidden === 'function' && window.vaftIsDocumentHidden()) return;
     if (!isAutoQualityOn()) return;
-    const v = q('video');
+    const v = window.vaftGetPlayerVideoElement?.();
     if (busy || !v) return;
     if (location.href !== lastUrl) { lastUrl = location.href; done = false; }
     if (q('.adblock-overlay')?.style.display === 'block') { done = false; return; }
