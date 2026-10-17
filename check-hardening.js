@@ -128,10 +128,71 @@ function runRuntimeStatusChecks(src) {
     assert(src.includes('...vaftRuntimeStatus'), 'vaftStatus does not expose bridged worker state');
 }
 
+function runCodecSafetyChecks(src) {
+    const codecFamily = new Function(`${extractFunction(src, 'videoCodecFamily')}\nreturn videoCodecFamily;`)();
+    assert.strictEqual(codecFamily('avc1.64002A,mp4a.40.2'), 'avc');
+    assert.strictEqual(codecFamily('mp4a.40.2,av01.0.08M.08'), 'av1');
+    assert.strictEqual(codecFamily('MP4A.40.2,HVC1.2.4.L150.B0'), 'hevc');
+    assert.strictEqual(codecFamily(undefined), 'unknown');
+    assert.strictEqual(codecFamily(''), 'unknown');
+    assert.strictEqual(codecFamily('vp09.00.10.08'), 'unknown');
+
+    const selectStream = new Function(`
+        function parseAttributes(line) {
+            const body = line.substring(line.indexOf(':') + 1);
+            return Object.fromEntries(body.split(',').map((part) => {
+                const [key, ...rest] = part.split('=');
+                return [key, rest.join('=').replace(/^"|"$/g, '')];
+            }));
+        }
+        ${extractFunction(src, 'videoCodecFamily')}
+        ${extractFunction(src, 'getStreamUrlForResolution')}
+        return getStreamUrlForResolution;
+    `)();
+    const master = [
+        '#EXTM3U',
+        '#EXT-X-STREAM-INF:RESOLUTION=1920x1080,FRAME-RATE=60,CODECS="avc1.64002A"',
+        'https://example.com/avc-1080.m3u8',
+        '#EXT-X-STREAM-INF:RESOLUTION=1280x720,FRAME-RATE=60,CODECS="hvc1.2.4.L150.B0"',
+        'https://example.com/hevc-720.m3u8',
+        '#EXT-X-STREAM-INF:RESOLUTION=854x480,FRAME-RATE=30,CODECS="av01.0.08M.08"',
+        'https://example.com/av1-480.m3u8'
+    ].join('\n');
+    const hevcSelection = {};
+    assert.strictEqual(
+        selectStream(master, { Resolution: '1920x1080', FrameRate: 60, Codecs: 'hvc1.2.4.L150.B0' }, hevcSelection),
+        'https://example.com/hevc-720.m3u8',
+        'same-family HEVC backup must beat a closer AVC rendition'
+    );
+    assert.strictEqual(codecFamily(hevcSelection.codecs), 'hevc');
+    const avcSelection = {};
+    assert.strictEqual(
+        selectStream(master, { Resolution: '1920x1080', FrameRate: 60, Codecs: 'avc1.64002A' }, avcSelection),
+        'https://example.com/avc-1080.m3u8'
+    );
+    assert.strictEqual(codecFamily(avcSelection.codecs), 'avc');
+
+    const stripFactory = new Function(`
+        let AllSegmentsAreAdSegments = false;
+        const AdSignifier = 'stitched';
+        const AdSegmentCache = new Map();
+        ${extractFunction(src, 'stripAdSegments')}
+        return { stripAdSegments, AdSegmentCache };
+    `);
+    const stripScope = stripFactory();
+    const info = { NumStrippedAdSegments: 0 };
+    stripScope.stripAdSegments('#EXTM3U\n#EXTINF:2.0,ad\nhttps://example.com/ad.ts', false, info, true);
+    assert.strictEqual(stripScope.AdSegmentCache.get('https://example.com/ad.ts').enhanced, true, 'enhanced playlist cache entry must be tagged');
+
+    assert(src.includes('${videoCodecFamily.toString()}') || src.includes('videoCodecFamily.toString()'), 'codec helper not injected into worker');
+    assert(src.includes('adCacheEntry.enhanced'), 'enhanced cached segments are not guarded');
+    assert(/status:\s*403/.test(src), 'enhanced cached segments must not receive the AVC blank MP4');
+}
+
 function runHardeningChecks(src, options = {}) {
     const behavior = options.behavior !== false;
     const strictRepo = options.strictRepo !== false;
-    assert(/\/\/ @version\s+37\.4\.1/.test(src), '37.4.1 version missing');
+    assert(/\/\/ @version\s+37\.5\.0/.test(src), '37.5.0 version missing');
     assert(src.includes('scope.WorkerFetchTimeoutMs = 15000;'), 'worker fetch timeout missing');
     assert(src.includes('const twitchWorkers = new Set();'), 'worker Set missing');
     assert(src.includes('URL.revokeObjectURL(workerBlobUrl);'), 'worker blob URL cleanup missing');
@@ -151,13 +212,12 @@ function runHardeningChecks(src, options = {}) {
     assert(src.includes('// @updateURL    https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js'), 'updateURL must point to Wibias main');
     assert(src.includes('// @downloadURL  https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js'), 'downloadURL must point to Wibias main');
     if (strictRepo) {
-        assert(src.includes("element.Codecs?.startsWith('avc')"), 'missing-codec protection missing');
-        assert(src.includes("streamInfo.ResolutionList.some((element) => element.Codecs?.startsWith('hev') || element.Codecs?.startsWith('hvc'))"), 'HEVC missing-codec protection missing');
         assert(src.includes('streamInfo.RequestedAds.size > 100'), 'RequestedAds bound missing');
         runRuntimeStatusChecks(src);
+        runCodecSafetyChecks(src);
     }
     if (behavior) runBehaviorChecks(src);
     return true;
 }
 
-module.exports = { runHardeningChecks, extractFunction, runRuntimeStatusChecks };
+module.exports = { runHardeningChecks, extractFunction, runRuntimeStatusChecks, runCodecSafetyChecks };
