@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Adblock Userscript
 // @namespace    https://github.com/0rpi/twitch-adblock-userscript
-// @version      37.5.1
+// @version      37.6.0
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
@@ -65,6 +65,7 @@
         scope.AdSegmentCache = new Map();
         scope.AllSegmentsAreAdSegments = false;
         scope.WorkerFetchTimeoutMs = 15000;
+        scope.BlockCsaiAdRequests = false;// CSAI observation is always on; active blocking is opt-in.
     }
     let isActivelyStrippingAds = false;
     let localStorageHookFailed = false;
@@ -83,6 +84,58 @@
     }
     window.vaftIsDocumentHidden = isDocumentActuallyHidden;
     const twitchWorkers = new Set();
+    const csaiRequestStats = {
+        total: 0,
+        blocked: 0,
+        allowed: 0,
+        fetch: 0,
+        xhr: 0,
+        preroll: 0,
+        midroll: 0,
+        unknown: 0
+    };
+    function getCsaiRequestType(requestUrl) {
+        if (typeof requestUrl !== 'string' || !requestUrl) return null;
+        try {
+            const parsed = new URL(requestUrl);
+            if (parsed.hostname.toLowerCase() !== 'edge.ads.twitch.tv') return null;
+            const breakPosition = parsed.searchParams.get('bp');
+            if (breakPosition === 'midroll') return 'midroll';
+            if (breakPosition === 'preroll') return 'preroll';
+            return 'unknown';
+        } catch {
+            return null;
+        }
+    }
+    function recordCsaiRequest(type, transport, blocked) {
+        const normalizedType = type === 'preroll' || type === 'midroll' ? type : 'unknown';
+        const normalizedTransport = transport === 'xhr' ? 'xhr' : 'fetch';
+        csaiRequestStats.total++;
+        csaiRequestStats[normalizedType]++;
+        csaiRequestStats[normalizedTransport]++;
+        csaiRequestStats[blocked ? 'blocked' : 'allowed']++;
+        if (csaiRequestStats.total === 1 || csaiRequestStats.total % 10 === 0) {
+            console.debug('[vaft] CSAI request', {
+                type: normalizedType,
+                transport: normalizedTransport,
+                blocked: Boolean(blocked),
+                total: csaiRequestStats.total
+            });
+        }
+    }
+    function getCsaiStatsSnapshot() {
+        return {
+            total: csaiRequestStats.total,
+            blocked: csaiRequestStats.blocked,
+            allowed: csaiRequestStats.allowed,
+            fetch: csaiRequestStats.fetch,
+            xhr: csaiRequestStats.xhr,
+            preroll: csaiRequestStats.preroll,
+            midroll: csaiRequestStats.midroll,
+            unknown: csaiRequestStats.unknown
+        };
+    }
+
     const vaftRuntimeStatus = {
         channel: null,
         showingAd: false,
@@ -1147,6 +1200,14 @@
             const isRequest = typeof Request !== 'undefined' && input instanceof Request;
             const isUrlObject = typeof URL !== 'undefined' && input instanceof URL;
             const requestUrl = typeof input === 'string' ? input : isRequest ? input.url : isUrlObject ? input.href : '';
+            const csaiType = getCsaiRequestType(requestUrl);
+            if (csaiType) {
+                const blocked = BlockCsaiAdRequests === true;
+                recordCsaiRequest(csaiType, 'fetch', blocked);
+                if (blocked) {
+                    return Promise.reject(new TypeError('Failed to fetch'));
+                }
+            }
             let requestHeaders;
             try {
                 requestHeaders = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
@@ -1201,6 +1262,47 @@
                 }
             }
             return realFetch.call(this, input, nextInit, ...args);
+        };
+    }
+    function hookXHR() {
+        if (typeof XMLHttpRequest === 'undefined') return;
+        const realOpen = XMLHttpRequest.prototype.open;
+        const realSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(method, url, ...args) {
+            const requestUrl = typeof url === 'string' ? url : (typeof URL !== 'undefined' && url instanceof URL ? url.href : '');
+            const csaiType = getCsaiRequestType(requestUrl);
+            this.__vaftCsaiType = csaiType;
+            this.__vaftBlockCsai = Boolean(csaiType && BlockCsaiAdRequests === true);
+            if (csaiType) {
+                recordCsaiRequest(csaiType, 'xhr', this.__vaftBlockCsai);
+            }
+            return realOpen.call(this, method, url, ...args);
+        };
+        XMLHttpRequest.prototype.send = function(...args) {
+            if (!this.__vaftBlockCsai) {
+                return realSend.apply(this, args);
+            }
+            const xhr = this;
+            setTimeout(() => {
+                const emptyResponse = xhr.responseType === '' || xhr.responseType === 'text' ? '' : null;
+                const finalState = {
+                    readyState: 4,
+                    status: 0,
+                    statusText: '',
+                    response: emptyResponse,
+                    responseText: '',
+                    responseURL: ''
+                };
+                for (const [key, value] of Object.entries(finalState)) {
+                    try {
+                        Object.defineProperty(xhr, key, { value, configurable: true });
+                    } catch {}
+                }
+                try { xhr.dispatchEvent(new Event('readystatechange')); } catch {}
+                try { xhr.dispatchEvent(new ProgressEvent('error')); } catch {}
+                try { xhr.dispatchEvent(new ProgressEvent('loadend')); } catch {}
+            }, 0);
+            return undefined;
         };
     }
     function onContentLoaded() {
@@ -1312,6 +1414,9 @@
         }
     }
     declareOptions(window);
+    try {
+        BlockCsaiAdRequests = localStorage.getItem('twitchAdSolutions_blockCsaiAdRequests') === 'true';
+    } catch {}
     const allBackupPlayerTypes = BackupPlayerTypes;
     const applyAdBackupMode = (mode) => {
         BackupPlayerTypes = mode === 'source' ? allBackupPlayerTypes.filter((x) => x !== 'autoplay') : allBackupPlayerTypes;
@@ -1321,6 +1426,7 @@
     } catch {}
     hookWindowWorker();
     hookFetch();
+    hookXHR();
     if (PlayerBufferingFix) {
         monitorPlayerBuffering();
     }
@@ -1358,6 +1464,14 @@
         }
     }
     window.getAutoQuality = getAutoQualityMode;
+    window.getCsaiBlocking = () => BlockCsaiAdRequests === true;
+    window.setCsaiBlocking = (enabled) => {
+        BlockCsaiAdRequests = enabled === true || enabled === 'true' || enabled === 'on';
+        try {
+            localStorage.setItem('twitchAdSolutions_blockCsaiAdRequests', BlockCsaiAdRequests ? 'true' : 'false');
+        } catch {}
+        return BlockCsaiAdRequests;
+    };
     window.setAutoQuality = (mode) => {
         try {
             localStorage.setItem('vaftAutoQuality', mode === 'off' ? 'off' : 'on');
@@ -1365,10 +1479,12 @@
     };
     window.vaftStatus = () => {
         return {
-            version: '37.5.1',
+            version: '37.6.0',
             workerCount: twitchWorkers.size,
             backupMode: BackupPlayerTypes.includes('autoplay') ? '360p' : 'source',
             autoQuality: getAutoQualityMode(),
+            blockCsaiAdRequests: BlockCsaiAdRequests,
+            csai: getCsaiStatsSnapshot(),
             ...vaftRuntimeStatus
         };
     };
@@ -1376,6 +1492,8 @@
         if (e.key === 'adBackupMode') {
             applyAdBackupMode(e.newValue);
             postTwitchWorkerMessage('UpdateBackupPlayerTypes', BackupPlayerTypes);
+        } else if (e.key === 'twitchAdSolutions_blockCsaiAdRequests') {
+            BlockCsaiAdRequests = e.newValue === 'true';
         }
     });
 })();
