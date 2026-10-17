@@ -6,6 +6,7 @@ on:
       - feat/codec-safety-37.5.0
     paths:
       - scripts/apply-codec-safety-37.5.0.cjs
+      - scripts/fix-codec-test-harness.cjs
       - .github/workflows/apply-codec-safety.yml
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Isolate codec selector test harness
+        run: node scripts/fix-codec-test-harness.cjs
       - name: Apply deterministic codec patch
         run: node scripts/apply-codec-safety-37.5.0.cjs
       - name: Verify patched tree
