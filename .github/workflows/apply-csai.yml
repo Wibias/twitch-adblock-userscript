@@ -6,6 +6,7 @@ on:
       - feat/csai-observability-37.6.0
     paths:
       - scripts/apply-csai-37.6.0.cjs
+      - scripts/fix-csai-hardening-harness.cjs
       - .github/workflows/apply-csai.yml
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Supply CSAI dependencies in legacy fetch harness
+        run: node scripts/fix-csai-hardening-harness.cjs
       - name: Apply deterministic CSAI patch
         run: node scripts/apply-csai-37.6.0.cjs
       - name: Verify patched tree
