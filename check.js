@@ -89,7 +89,7 @@ assert(src.includes("if (!isAutoQualityOn()) return;"), 'auto-quality guard miss
 // Version header present and bumped for this change set.
 const versionMatch = src.match(/\/\/ @version\s+(\d+\.\d+\.\d+)/);
 assert(versionMatch, '@version header missing');
-assert(versionMatch[1] === '37.4.0', `expected @version 37.4.0, got ${versionMatch[1]}`);
+assert(versionMatch[1] === '37.4.1', `expected @version 37.4.1, got ${versionMatch[1]}`);
 
 require('./check-hardening.js').runHardeningChecks(src);
 
