@@ -2,7 +2,7 @@
 
 Maintained Twitch ad-blocking userscript based on the archived `vaft` implementation from [pixeltris/TwitchAdSolutions](https://github.com/pixeltris/TwitchAdSolutions).
 
-This maintained version keeps the original HLS interception approach, ports proven fixes from maintained descendants, and adds reliability hardening, configurable ad fallback behavior, automatic quality handling, and runtime diagnostics.
+This maintained version keeps the original HLS interception approach, ports proven fixes from maintained descendants, and adds reliability hardening, safer codec handling, standalone ad-video resilience, configurable fallback behavior, automatic quality handling, and runtime diagnostics.
 
 ## Install
 
@@ -19,10 +19,24 @@ Updates are delivered through the userscript `@version` metadata.
 ### VAFT core
 
 - Detects Twitch stitched-ad HLS playlists.
-- Tries clean backup player feeds while preserving the current resolution where possible.
+- Tries clean backup player feeds while preserving resolution and codec family where possible.
 - Uses `embed` and `popout` Source feeds first, with optional `autoplay` 360p fallback.
 - Strips remaining ad segments when required.
+- Treats AVC, HEVC, and AV1 explicitly instead of assuming every high-quality stream is AVC/HEVC.
+- Never injects the hard-coded AVC blank segment into an HEVC/AV1 playlist.
 - Reloads the player only when necessary, otherwise uses pause/play recovery after ads.
+
+### Standalone Twitch ad videos
+
+Twitch can render client-side ad `<video>` elements beside the player or in chat, outside the HLS stream VAFT normally processes.
+
+The maintained userscript:
+
+- identifies these standalone videos by Twitch's `media-amazon.com` ad-CDN source;
+- hides, mutes, and pauses them without targeting the real player;
+- avoids treating the first `<video>` in DOM order as the primary stream;
+- restores a video node if Twitch later recycles it for normal content;
+- routes auto-quality and visibility recovery through the actual player video.
 
 ### Ad fallback mode
 
@@ -50,7 +64,7 @@ When enabled, VAFT prefers:
 1440p60 > 1080p60 > 1440p > 1080p
 ```
 
-It only intervenes when the current video is below 1080p. Temporary UI failures are retried instead of permanently marking the attempt as complete.
+It only intervenes when the current player video is below 1080p. Temporary UI failures are retried instead of permanently marking the attempt as complete.
 
 Console API:
 
@@ -64,9 +78,42 @@ getAutoQuality()
 
 - Suppresses Twitch ad banner/countdown UI.
 - Uses pause/play after an ad when a full reload is unnecessary.
-- Reloads after stripped segments or HEVC-specific transitions when required.
+- Reloads after stripped segments or enhanced-codec transitions when required.
 - Detects stuck playback and attempts recovery.
 - After returning to a backgrounded tab, catches up excessive live latency with pause/play when needed.
+- Avoids injecting VAFT hooks a second time into a Twitch worker that already carries them.
+
+## CSAI diagnostics and optional blocking
+
+Twitch also makes client-side ad requests to `edge.ads.twitch.tv`. These requests are outside the HLS/SSAI path.
+
+Since 37.6.0, VAFT observes and counts these requests for both `fetch` and `XMLHttpRequest`. **Blocking is off by default.** This gives useful field diagnostics without automatically taking on the detection/compatibility trade-off of network-level CSAI blocking.
+
+Enable blocking explicitly:
+
+```js
+setCsaiBlocking(true)
+```
+
+Disable it again:
+
+```js
+setCsaiBlocking(false)
+```
+
+Check the current setting:
+
+```js
+getCsaiBlocking()
+```
+
+The setting is persisted as:
+
+```text
+localStorage.twitchAdSolutions_blockCsaiAdRequests
+```
+
+When enabled, matching Fetch requests reject like a network failure and matching XHR requests finish with a network-error-style `status: 0` path. Non-CSAI requests, including Twitch GQL, continue through the normal hook.
 
 ## Diagnostics
 
@@ -80,10 +127,21 @@ Example:
 
 ```js
 {
-  version: '37.4.1',
+  version: '37.6.0',
   workerCount: 2,
   backupMode: '360p',
   autoQuality: 'on',
+  blockCsaiAdRequests: false,
+  csai: {
+    total: 3,
+    blocked: 0,
+    allowed: 3,
+    fetch: 2,
+    xhr: 1,
+    preroll: 1,
+    midroll: 2,
+    unknown: 0
+  },
   channel: 'examplechannel',
   showingAd: false,
   strippingSegments: false,
@@ -98,16 +156,23 @@ Example:
 Fields:
 
 - `workerCount`: currently tracked Twitch workers.
+- `backupMode`: current Source/360p fallback policy.
+- `autoQuality`: automatic quality mode.
+- `blockCsaiAdRequests`: whether optional CSAI network blocking is enabled.
+- `csai.total`: observed `edge.ads.twitch.tv` requests in this page session.
+- `csai.blocked` / `csai.allowed`: observed requests split by action.
+- `csai.fetch` / `csai.xhr`: observed requests split by transport.
+- `csai.preroll` / `csai.midroll` / `csai.unknown`: observed requests split by break type.
 - `channel`: channel reported by the active worker stream state.
-- `showingAd`: whether the worker currently sees an ad window.
-- `strippingSegments`: whether ad segments are currently being stripped.
+- `showingAd`: whether the worker currently sees an HLS ad window.
+- `strippingSegments`: whether HLS ad segments are currently being stripped.
 - `backupPlayerType`: active backup player type, such as `embed`, `popout`, or `autoplay`.
 - `lastPlayerReload`: timestamp of the most recent VAFT-triggered player reload.
 - `numStrippedAdSegments`: number of stripped ad segments in the current state.
-- `isMidroll`: whether the current ad state is a midroll.
+- `isMidroll`: whether the current worker ad state is a midroll.
 - `lastUpdate`: timestamp of the most recent worker-to-page diagnostics update.
 
-Since 37.4.1, these stream fields come from the worker that actually processes the HLS playlists instead of the page-local `StreamInfos` copy.
+Since 37.4.1, the HLS stream fields come from the worker that actually processes the playlists instead of the page-local `StreamInfos` copy.
 
 Debug helpers:
 
@@ -146,9 +211,21 @@ Switch back with:
 setAdBackupMode('360p')
 ```
 
-### Player hangs or reloads unexpectedly
+### Side/chat ad slot appears
 
-Capture `vaftStatus()` while the issue is happening and include relevant console messages when reporting the problem. In particular, note:
+Check `vaftStatus().csai`. A rising CSAI counter with no corresponding HLS `showingAd` state indicates client-side ad activity that the playlist layer does not see.
+
+Standalone `media-amazon.com` ad videos are hidden automatically. If you explicitly want to test network-level CSAI blocking as well:
+
+```js
+setCsaiBlocking(true)
+```
+
+If Twitch behavior becomes worse, disable it again and include the `csai` counters in the bug report.
+
+### Player hangs, goes black, or reloads unexpectedly
+
+Capture `vaftStatus()` while the issue is happening and include relevant console messages. In particular, note:
 
 - `channel`
 - `showingAd`
@@ -156,7 +233,11 @@ Capture `vaftStatus()` while the issue is happening and include relevant console
 - `backupPlayerType`
 - `lastPlayerReload`
 - `numStrippedAdSegments`
+- `blockCsaiAdRequests`
+- `csai`
 - `lastUpdate`
+
+For HEVC/AV1 issues, also mention the selected Twitch quality and browser.
 
 ## Reliability hardening
 
@@ -173,11 +254,18 @@ Compared with the archived VAFT 37.0.0 baseline, this maintained version include
 - Worker blob URLs are revoked after construction.
 - Terminated or inactive workers are removed from tracking.
 - Worker-to-page fetch requests time out after 15 seconds instead of leaking forever.
+- Workers already containing VAFT hooks are not injected a second time.
 - Signed/query-string `.m3u8` URLs are accepted.
-- Missing codec metadata is tolerated.
+- Missing or mixed-order codec metadata is tolerated.
+- AVC, HEVC, and AV1 are classified explicitly.
+- Same-family backup renditions are preferred before cross-codec fallback.
+- Enhanced-codec playlists never receive the AVC blank segment.
+- Standalone Twitch ad videos cannot become the primary-video target merely because of DOM order.
+- Recycled ad video nodes are restored when Twitch reuses them for content.
 - `RequestedAds` is bounded to avoid unbounded growth.
 - Auto-quality retries after transient failures and always clears its busy state.
 - Worker-side runtime state is bridged into `vaftStatus()`.
+- CSAI requests are counted by transport and break type, with optional explicit network blocking.
 
 ## Development
 
@@ -187,7 +275,7 @@ Run the regression checks with:
 node check.js
 ```
 
-The test suite covers the main hardening paths, including fetch normalization, HLS parsing, codec guards, worker lifecycle expectations, auto-quality state handling, and the runtime diagnostics bridge.
+The suite covers fetch normalization, HLS parsing, codec-family safety, enhanced-segment handling, worker lifecycle behavior, standalone-video targeting/restoration, CSAI Fetch/XHR handling, auto-quality state, and runtime diagnostics.
 
 Versioning:
 
@@ -221,6 +309,8 @@ The archived upstream remains the baseline and primary provenance source. Credit
 ## Limits
 
 - Targets Twitch pages under `*.twitch.tv`, primarily desktop `www.twitch.tv`.
+- CSAI network blocking is experimental and intentionally opt-in.
+- Page-context code cannot control every browser-, extension-, or cross-origin-frame behavior Twitch may use.
 - Twitch changes its player and delivery stack frequently, so breakage can happen without warning.
 - This project is not affiliated with Twitch.
 
