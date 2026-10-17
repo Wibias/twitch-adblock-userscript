@@ -99,11 +99,16 @@ function runHardeningChecks(src, options = {}) {
     assert(src.includes("new Headers(init?.headers ?? (isRequest ? input.headers : undefined))"), 'Fetch Headers normalization missing');
     assert(src.includes("input instanceof Request"), 'Fetch Request normalization missing');
     assert(src.includes('done = await setQuality();'), 'auto-quality result is not respected');
-    assert(src.includes('finally {\n      busy = false;'), 'auto-quality busy cleanup missing');
+    assert(/finally\s*\{\s*busy = false;\s*\}/.test(src), 'auto-quality busy cleanup missing');
     assert(src.includes('window.vaftStatus = () =>'), 'vaftStatus diagnostics missing');
     assert(src.includes('new URL(line);'), 'HLS URL parsing missing');
+    assert(src.includes('// @homepageURL  https://github.com/Wibias/twitch-adblock-userscript'), 'homepageURL must point to Wibias repo');
+    assert(src.includes('// @supportURL   https://github.com/Wibias/twitch-adblock-userscript/issues'), 'supportURL must point to Wibias repo');
+    assert(src.includes('// @updateURL    https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js'), 'updateURL must point to Wibias main');
+    assert(src.includes('// @downloadURL  https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js'), 'downloadURL must point to Wibias main');
     if (strictRepo) {
         assert(src.includes("element.Codecs?.startsWith('avc')"), 'missing-codec protection missing');
+        assert(src.includes("streamInfo.ResolutionList.some((element) => element.Codecs?.startsWith('hev') || element.Codecs?.startsWith('hvc'))"), 'HEVC missing-codec protection missing');
         assert(src.includes('streamInfo.RequestedAds.size > 100'), 'RequestedAds bound missing');
     }
     if (behavior) runBehaviorChecks(src);

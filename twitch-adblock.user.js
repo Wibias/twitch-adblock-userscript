@@ -5,10 +5,10 @@
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
-// @homepageURL  https://github.com/0rpi/twitch-adblock-userscript
-// @supportURL   https://github.com/0rpi/twitch-adblock-userscript/issues
-// @updateURL    https://raw.githubusercontent.com/0rpi/twitch-adblock-userscript/main/twitch-adblock.user.js
-// @downloadURL  https://raw.githubusercontent.com/0rpi/twitch-adblock-userscript/main/twitch-adblock.user.js
+// @homepageURL  https://github.com/Wibias/twitch-adblock-userscript
+// @supportURL   https://github.com/Wibias/twitch-adblock-userscript/issues
+// @updateURL    https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js
+// @downloadURL  https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js
 // @match        *://*.twitch.tv/*
 // @run-at       document-start
 // @inject-into  page
@@ -363,7 +363,7 @@
                                         }
                                     }
                                     const nonHevcResolutionList = streamInfo.ResolutionList.filter((element) => element.Codecs?.startsWith('avc') || element.Codecs?.startsWith('av0'));
-                                    if (AlwaysReloadPlayerOnAd || (nonHevcResolutionList.length > 0 && streamInfo.ResolutionList.some((element) => element.Codecs.startsWith('hev') || element.Codecs.startsWith('hvc')) && !SkipPlayerReloadOnHevc)) {
+                                    if (AlwaysReloadPlayerOnAd || (nonHevcResolutionList.length > 0 && streamInfo.ResolutionList.some((element) => element.Codecs?.startsWith('hev') || element.Codecs?.startsWith('hvc')) && !SkipPlayerReloadOnHevc)) {
                                         if (nonHevcResolutionList.length > 0) {
                                             for (let i = 0; i < lines.length - 1; i++) {
                                                 if (lines[i].startsWith('#EXT-X-STREAM-INF')) {

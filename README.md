@@ -8,7 +8,7 @@ Maintained fork of vaft ([pixeltris/TwitchAdSolutions](https://github.com/pixelt
 
 1. [Violentmonkey](https://violentmonkey.github.io/) or [Tampermonkey](https://www.tampermonkey.net/)
 2. Kill any other vaft copy first (userscript or uBO `vaft-ublock-origin.js` scriptlet) — different filename = no auto-replace
-3. Open **[twitch-adblock.user.js](https://raw.githubusercontent.com/0rpi/twitch-adblock-userscript/main/twitch-adblock.user.js)** → Confirm. Auto-updates on `@version` bump.
+3. Open **[twitch-adblock.user.js](https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js)** → Confirm. Auto-updates on `@version` bump.
 
 > Another vaft >= v24 running first → this one no-ops.
 
@@ -61,7 +61,7 @@ Fork vaft maintenu ([pixeltris/TwitchAdSolutions](https://github.com/pixeltris/T
 
 1. [Violentmonkey](https://violentmonkey.github.io/) ou [Tampermonkey](https://www.tampermonkey.net/)
 2. Virer tout autre vaft avant (userscript ou scriptlet uBO) — nom différent = pas de remplacement auto
-3. Ouvrir **[twitch-adblock.user.js](https://raw.githubusercontent.com/0rpi/twitch-adblock-userscript/main/twitch-adblock.user.js)** → Confirmer.
+3. Ouvrir **[twitch-adblock.user.js](https://raw.githubusercontent.com/Wibias/twitch-adblock-userscript/main/twitch-adblock.user.js)** → Confirmer.
 
 > Un autre vaft >= v24 chargé avant → celui-ci s'efface.
 
