@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Adblock Userscript
 // @namespace    https://github.com/0rpi/twitch-adblock-userscript
-// @version      37.4.0
+// @version      37.4.1
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
@@ -83,6 +83,23 @@
     }
     window.vaftIsDocumentHidden = isDocumentActuallyHidden;
     const twitchWorkers = new Set();
+    const vaftRuntimeStatus = {
+        channel: null,
+        showingAd: false,
+        strippingSegments: false,
+        backupPlayerType: null,
+        lastPlayerReload: null,
+        numStrippedAdSegments: 0,
+        isMidroll: false,
+        lastUpdate: null
+    };
+    function updateVaftRuntimeStatus(nextStatus) {
+        if (!nextStatus || typeof nextStatus !== 'object') {
+            return;
+        }
+        Object.assign(vaftRuntimeStatus, nextStatus);
+        vaftRuntimeStatus.lastUpdate = Date.now();
+    }
     const workerStringConflicts = [
         'twitch',
         'isVariantA'// TwitchNoSub
@@ -232,6 +249,7 @@
                 };
                 this.addEventListener('message', (e) => {
                     if (e.data.key == 'UpdateAdBlockBanner') {
+                        updateVaftRuntimeStatus(e.data.runtimeStatus);
                         updateAdblockBanner(e.data);
                     } else if (e.data.key == 'PauseResumePlayer') {
                         doTwitchPlayerTask(true, false);
@@ -527,7 +545,16 @@
                     key: 'UpdateAdBlockBanner',
                     isMidroll: streamInfo.IsMidroll,
                     hasAds: streamInfo.IsShowingAd,
-                    isStrippingAdSegments: false
+                    isStrippingAdSegments: false,
+                    runtimeStatus: {
+                        channel: streamInfo.ChannelName ?? null,
+                        showingAd: streamInfo.IsShowingAd ?? false,
+                        strippingSegments: false,
+                        backupPlayerType: streamInfo.ActiveBackupPlayerType ?? null,
+                        lastPlayerReload: streamInfo.LastPlayerReload ?? null,
+                        numStrippedAdSegments: streamInfo.NumStrippedAdSegments ?? 0,
+                        isMidroll: streamInfo.IsMidroll ?? false
+                    }
                 });
             }
             if (!streamInfo.IsMidroll) {
@@ -664,7 +691,16 @@
             isMidroll: streamInfo.IsMidroll,
             hasAds: streamInfo.IsShowingAd,
             isStrippingAdSegments: streamInfo.IsStrippingAdSegments,
-            numStrippedAdSegments: streamInfo.NumStrippedAdSegments
+            numStrippedAdSegments: streamInfo.NumStrippedAdSegments,
+            runtimeStatus: {
+                channel: streamInfo.ChannelName ?? null,
+                showingAd: streamInfo.IsShowingAd ?? false,
+                strippingSegments: streamInfo.IsStrippingAdSegments ?? false,
+                backupPlayerType: streamInfo.ActiveBackupPlayerType ?? null,
+                lastPlayerReload: streamInfo.LastPlayerReload ?? null,
+                numStrippedAdSegments: streamInfo.NumStrippedAdSegments ?? 0,
+                isMidroll: streamInfo.IsMidroll ?? false
+            }
         });
         return textStr;
     }
@@ -1218,18 +1254,12 @@
         } catch {}
     };
     window.vaftStatus = () => {
-        const streams = Object.values(StreamInfos).filter(Boolean);
-        const activeStream = streams.find((stream) => stream.IsShowingAd) || streams[0] || null;
         return {
-            version: '37.4.0',
+            version: '37.4.1',
             workerCount: twitchWorkers.size,
             backupMode: BackupPlayerTypes.includes('autoplay') ? '360p' : 'source',
             autoQuality: getAutoQualityMode(),
-            channel: activeStream?.ChannelName ?? null,
-            showingAd: activeStream?.IsShowingAd ?? false,
-            strippingSegments: activeStream?.IsStrippingAdSegments ?? false,
-            backupPlayerType: activeStream?.ActiveBackupPlayerType ?? null,
-            lastPlayerReload: activeStream?.LastPlayerReload ?? null
+            ...vaftRuntimeStatus
         };
     };
     window.addEventListener('storage', (e) => {
