@@ -81,6 +81,24 @@ assert(src.includes('window.setAutoQuality'), 'setAutoQuality missing');
 assert(src.includes('window.getAutoQuality'), 'getAutoQuality missing');
 assert(src.includes('data-kind="quality"'), 'quality toggle buttons missing');
 
+// Auto-quality must use the player API instead of driving Twitch's visible Settings menu.
+const qualityScope = new Function(`
+    ${extract('pickPreferredPlayerQuality')}
+    return { pickPreferredPlayerQuality };
+`)();
+const qualities = [
+    { name: '720p60', height: 720, bitrate: 3500000 },
+    { name: '1080p60', height: 1080, bitrate: 6000000 },
+    { name: '1440p60', height: 1440, bitrate: 9000000 },
+];
+assert.strictEqual(qualityScope.pickPreferredPlayerQuality(qualities), qualities[2]);
+assert.strictEqual(qualityScope.pickPreferredPlayerQuality(qualities.slice(0, 2)), qualities[1]);
+assert.strictEqual(qualityScope.pickPreferredPlayerQuality([{ name: '720p60', height: 720, bitrate: 3500000 }]), null);
+assert(src.includes('window.vaftSetPreferredQuality'), 'player API auto-quality helper missing');
+assert(src.includes('.getQualities()'), 'player getQualities API missing');
+assert(src.includes('.setQuality('), 'player setQuality API missing');
+assert(!src.includes('player-settings-menu-item-quality'), 'auto-quality still opens Twitch Quality settings');
+
 // Interval guards: no busy loop when tab hidden or auto-quality off.
 assert(src.includes('vaftIsDocumentHidden'), 'native hidden-state guard missing');
 assert(!src.includes('if (document.hidden) return;'), 'patched document.hidden guard still present');
@@ -89,7 +107,7 @@ assert(src.includes("if (!isAutoQualityOn()) return;"), 'auto-quality guard miss
 // Version header present and bumped for this change set.
 const versionMatch = src.match(/\/\/ @version\s+(\d+\.\d+\.\d+)/);
 assert(versionMatch, '@version header missing');
-assert(versionMatch[1] === '37.6.0', `expected @version 37.6.0, got ${versionMatch[1]}`);
+assert(versionMatch[1] === '37.6.1', `expected @version 37.6.1, got ${versionMatch[1]}`);
 
 (async () => {
     await require('./check-csai.js').runCsaiChecks(src);

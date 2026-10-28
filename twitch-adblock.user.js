@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Twitch Adblock Userscript
 // @namespace    https://github.com/0rpi/twitch-adblock-userscript
-// @version      37.6.0
+// @version      37.6.1
 // @description  Blocks Twitch ads (fork of vaft from pixeltris/TwitchAdSolutions) with a 360p/Source ad fallback toggle and auto 1440p60/1080p60 quality (toggleable)
 // @author       0rpi, pixeltris/TwitchAdSolutions contributors, VideoAdBlockForTwitch contributors (https://github.com/cleanlock/VideoAdBlockForTwitch#credits)
 // @license      MIT
@@ -1095,6 +1095,40 @@
             state: playerState
         };
     }
+    function pickPreferredPlayerQuality(qualities) {
+        if (!Array.isArray(qualities)) return null;
+        const offered = qualities.filter((quality) => quality && typeof quality === 'object');
+        const normalizedName = (quality) => String(quality.name || '').toLowerCase().replace(/\s+/g, '');
+        for (const preferredName of ['1440p60', '1080p60', '1440p', '1080p']) {
+            const match = offered.find((quality) => normalizedName(quality).startsWith(preferredName));
+            if (match) return match;
+        }
+        for (const preferredHeight of [1440, 1080]) {
+            const matches = offered
+                .filter((quality) => Number(quality.height) === preferredHeight)
+                .sort((a, b) => Number(b.bitrate || 0) - Number(a.bitrate || 0));
+            if (matches.length) return matches[0];
+        }
+        return null;
+    }
+    function setPreferredPlayerQuality() {
+        const player = getPlayerAndState()?.player;
+        if (!player || typeof player.getQualities !== 'function' || typeof player.setQuality !== 'function') {
+            return false;
+        }
+        try {
+            const target = pickPreferredPlayerQuality(player.getQualities());
+            if (!target) return false;
+            if (typeof player.getQuality === 'function' && player.getQuality() === target) return true;
+            player.setQuality(target, true);
+            return true;
+        } catch (error) {
+            console.debug('[vaft] player API auto-quality attempt failed', error);
+            return false;
+        }
+    }
+    window.vaftSetPreferredQuality = setPreferredPlayerQuality;
+
     function doTwitchPlayerTask(isPausePlay, isReload) {
         const playerAndState = getPlayerAndState();
         if (!playerAndState) {
@@ -1479,7 +1513,7 @@
     };
     window.vaftStatus = () => {
         return {
-            version: '37.6.0',
+            version: '37.6.1',
             workerCount: twitchWorkers.size,
             backupMode: BackupPlayerTypes.includes('autoplay') ? '360p' : 'source',
             autoQuality: getAutoQualityMode(),
@@ -1501,11 +1535,9 @@
 (() => {
   if (window.self !== window.top || typeof window.setAdBackupMode !== 'function') return;
   document.addEventListener('DOMContentLoaded', () => document.head.insertAdjacentHTML('beforeend', '<style>.player-adblock-notice,[data-a-target="video-ad-label"],div:has(> [data-a-target="video-ad-label"]),[data-a-target="video-ad-countdown"],[data-test-selector="ad-banner-default-text"]{display:none!important}#vaft-ad-mode{display:inline-flex;align-items:center;gap:2px;margin-right:8px;font-size:12px;font-weight:600}#vaft-ad-mode span{margin-right:4px;color:var(--color-text-alt-2,#adadb8)}#vaft-ad-mode button{padding:3px 8px;border:0;border-radius:4px;cursor:pointer;background:var(--color-background-button-secondary-default,#2f2f35);color:var(--color-text-button-secondary,#efeff1)}#vaft-ad-mode button[aria-pressed="true"]{background:var(--color-background-button-primary-default,#9147ff);color:var(--color-text-button-primary,#fff)}#vaft-ad-mode .vaft-sep{margin:0 6px;opacity:.5}</style>'));
-  const PREF = ['1440p60', '1080p60', '1440p', '1080p'];
   let lastUrl = '';
   let done = false;
 
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const q = s => document.querySelector(s);
   const isAutoQualityOn = () => {
     try {
@@ -1517,21 +1549,8 @@
   };
 
   async function setQuality() {
-    const settings = q('[data-a-target="player-settings-button"]');
-    if (!settings) return false;
-    settings.click();
-    await sleep(300);
-    const qualityBtn = q('[data-a-target="player-settings-menu-item-quality"]');
-    if (!qualityBtn) { settings.click(); return false; }
-    qualityBtn.click();
-    await sleep(300);
-    const labels = [...document.querySelectorAll('[data-a-target="player-settings-menu"] input[type="radio"]')]
-      .map(input => ({ input, text: input.closest('div')?.textContent.trim() || '' }));
-    const pick = PREF.map(p => labels.find(l => l.text.startsWith(p))).find(Boolean);
-    if (pick) pick.input.click();
-    await sleep(200);
-    if (q('[data-a-target="player-settings-menu"]')) settings.click();
-    return !!pick;
+    return typeof window.vaftSetPreferredQuality === 'function'
+      && window.vaftSetPreferredQuality();
   }
 
   function renderModes(box) {
