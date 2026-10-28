@@ -195,7 +195,7 @@ function runCodecSafetyChecks(src) {
 function runHardeningChecks(src, options = {}) {
     const behavior = options.behavior !== false;
     const strictRepo = options.strictRepo !== false;
-    assert(/\/\/ @version\s+37\.6\.0/.test(src), '37.6.0 version missing');
+    assert(/\/\/ @version\s+37\.6\.1/.test(src), '37.6.1 version missing');
     assert(src.includes('scope.WorkerFetchTimeoutMs = 15000;'), 'worker fetch timeout missing');
     assert(src.includes('const twitchWorkers = new Set();'), 'worker Set missing');
     assert(src.includes('URL.revokeObjectURL(workerBlobUrl);'), 'worker blob URL cleanup missing');
